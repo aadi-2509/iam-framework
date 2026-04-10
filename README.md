@@ -1,63 +1,55 @@
 # IAM Cloud Security Framework
 
-A practical RBAC/ABAC access control framework I built to simulate and audit IAM policies in a multi-tenant SaaS environment. The goal was to understand how to design IAM at scale — where you have multiple customer tenants sharing the same AWS account but needing strict isolation.
+[![CI](https://github.com/yourusername/iam-framework/actions/workflows/ci.yml/badge.svg)](https://github.com/yourusername/iam-framework/actions)
+[![Python](https://img.shields.io/badge/python-3.10%20%7C%203.11%20%7C%203.12-blue)](https://www.python.org/)
+[![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 
-This isn't a library you'd drop into production as-is, but it's been useful for experimenting with policy design and for demoing IAM concepts.
+A practical RBAC/ABAC access control framework for multi-tenant SaaS on AWS. Generates IAM policy documents, evaluates access decisions locally without AWS API calls, enforces tenant isolation through attribute-based conditions, and logs every access decision to CloudTrail and Athena.
 
----
-
-## What it covers
-
-- Role-based access control (RBAC) with predefined roles per tenant type
-- Attribute-based conditions (ABAC) using resource tags and session context
-- SSO integration simulation with Cognito and Auth0
-- MFA enforcement for sensitive action categories
-- Tenant boundary enforcement — tenant A cannot touch tenant B's resources
-- Centralized audit logging to CloudTrail + Athena for forensic-quality trail
-- Policy evaluation simulator — input a principal + action + resource, get allow/deny + reason
+**Built by:** Aaditya Modi — M.S. Cybersecurity, Arizona State University
 
 ---
 
-## Architecture overview
+## What it does
+
+- Generates IAM identity policies, permission boundaries, and trust policies for 4 role tiers
+- Enforces tenant isolation using ABAC — one policy works for all tenants, boundary enforced by tag matching
+- Evaluates access decisions locally with a Python implementation of IAM policy evaluation logic
+- Supports MFA enforcement on sensitive actions, permission boundaries, and SCP simulation
+- REST API for evaluating access requests, generating policies, and managing tenants
+- Structured audit logging to local file, CloudWatch Logs, and S3 for Athena querying
+
+---
+
+## The problem this solves
+
+In a multi-tenant SaaS on AWS, the naive approach is one IAM role per tenant per tier:
 
 ```
-User login (SSO)
-     │
-     ▼
-Cognito User Pool / Auth0
-     │
-     ▼
-AssumeRole (with session tags: dept, tenant_id, env)
-     │
-     ▼
-IAM Role + SCPs + Permission Boundaries
-     │
-     ├── Resource access (S3, RDS, Lambda, etc.)
-     │        └── ABAC conditions on resource tags
-     └── Audit trail → CloudTrail → S3 → Athena
+tenant-a-admin, tenant-a-developer, tenant-a-analyst
+tenant-b-admin, tenant-b-developer, tenant-b-analyst
+tenant-c-admin, tenant-c-developer, tenant-c-analyst
+```
+
+At 50 tenants with 4 tiers each that is 200 roles. This framework uses ABAC so you need
+only 4 roles total. Tenant isolation is enforced by a tag condition at evaluation time:
+
+```json
+"Condition": {
+  "StringEquals": { "aws:PrincipalTag/tenant_id": "${aws:ResourceTag/tenant_id}" }
+}
 ```
 
 ---
 
-## Tenant model
+## Role tiers
 
-Each tenant gets:
-- An isolated IAM role per user tier (admin / developer / analyst / readonly)
-- Resource tags enforcing tenant boundaries (`tenant_id`, `env`)
-- A permission boundary that caps max permissions regardless of inline policies
-- Session tags injected at login via SSO (department, cost center, env)
-
-```
-Tenant A (FinTech)
-  ├── role/tenant-a-admin
-  ├── role/tenant-a-developer
-  ├── role/tenant-a-analyst
-  └── role/tenant-a-readonly
-
-Tenant B (HealthCo)
-  ├── role/tenant-b-admin
-  ...
-```
+| Role | What they can do |
+|------|-----------------|
+| admin | Full access within tenant boundary. MFA required for IAM and destructive actions. |
+| developer | Read/write to compute and storage. No IAM management. |
+| analyst | Read-only access to data stores. Can query via Athena. |
+| readonly | Minimal read-only access for auditors. |
 
 ---
 
@@ -65,99 +57,287 @@ Tenant B (HealthCo)
 
 ```
 iam-framework/
-├── src/
-│   ├── auth/
-│   │   ├── cognito_session.py     # Cognito token exchange + role assumption
-│   │   └── auth0_session.py       # Auth0 OIDC flow + role assumption
-│   ├── policies/
-│   │   ├── generator.py           # Generate IAM policy JSON from role definitions
-│   │   ├── evaluator.py           # Local policy evaluation engine
-│   │   └── templates.py           # Role policy templates per tier
-│   ├── tenants/
-│   │   └── manager.py             # Tenant CRUD, role assignment
-│   └── audit/
-│       └── logger.py              # Structured audit log writer
-├── infra/
-│   ├── iam_roles.tf               # Terraform: all IAM roles + boundaries
-│   ├── cognito.tf                 # User pools + identity pools
-│   └── athena.tf                  # Athena table for CloudTrail logs
-├── tests/
-│   ├── test_evaluator.py
-│   ├── test_generator.py
-│   └── test_tenant_isolation.py
-├── docs/
-│   └── policy_design.md
-├── requirements.txt
-├── .env.example
-└── README.md
+|-- src/
+|   |-- policies/
+|   |   |-- evaluator.py     # IAM policy evaluation engine (allow/deny/boundary/SCP)
+|   |   |-- generator.py     # Generates IAM JSON from role templates
+|   |   +-- templates.py     # Role definitions and permission boundary
+|   +-- audit/
+|       +-- logger.py        # Audit logger (file + CloudWatch + S3/Athena)
+|-- api/
+|   +-- app.py               # Flask REST API
+|-- tests/
+|   |-- test_evaluator.py    # 40+ allow/deny scenario tests
+|   +-- test_api.py          # REST API integration tests
+|-- infra/
+|   +-- iam_roles.tf         # Terraform: IAM roles with boundaries + Cognito
+|-- docs/
+|   +-- policy_design.md     # Design decisions and rationale
+|-- .github/workflows/
+|   +-- ci.yml               # GitHub Actions CI
+|-- .env.example
+|-- requirements.txt
+|-- CHANGELOG.md
++-- README.md
 ```
 
 ---
 
-## Quick start
+## Prerequisites
+
+- Python 3.10 or higher — https://python.org/downloads
+- Git — https://git-scm.com
+- No AWS account needed for local testing
+
+---
+
+## Quickstart (no AWS required)
+
+### 1. Clone the repository
 
 ```bash
 git clone https://github.com/yourusername/iam-framework.git
 cd iam-framework
+```
+
+### 2. Create and activate a virtual environment
+
+Windows:
+```bash
+python -m venv venv
+venv\Scripts\activate
+```
+
+macOS / Linux:
+```bash
+python -m venv venv
+source venv/bin/activate
+```
+
+### 3. Install dependencies
+
+```bash
 pip install -r requirements.txt
+```
 
-# Generate policies for a tenant
-python src/policies/generator.py --tenant fintech --role developer --output ./out/
+### 4. Run the test suite
 
-# Simulate an access request locally
-python src/policies/evaluator.py \
-  --principal "tenant-a-developer" \
-  --action "s3:GetObject" \
-  --resource "arn:aws:s3:::tenant-a-data/reports/*" \
-  --tags "tenant_id=tenant-a,env=prod"
-
-# Run tests
+```bash
 pytest tests/ -v
+```
+
+Expected — all green, 40+ tests passing.
+
+### 5. Generate IAM policies
+
+Creates real IAM policy JSON files you could upload to AWS:
+
+```bash
+python src/policies/generator.py --tenant fintech-prod --role developer --output out/
+```
+
+Output:
+```
+Generated policies in out/
+  Identity policy: fintech-prod_developer_policy.json
+  Boundary:        fintech-prod_boundary.json
+  Trust policy:    fintech-prod_developer_trust.json
+```
+
+Generate for all roles:
+```bash
+python src/policies/generator.py --tenant fintech-prod --role admin --output out/
+python src/policies/generator.py --tenant fintech-prod --role analyst --output out/
+python src/policies/generator.py --tenant fintech-prod --role readonly --output out/
+```
+
+You can also generate for different SSO providers:
+```bash
+python src/policies/generator.py --tenant healthco --role developer --sso auth0 --output out/
+```
+
+### 6. Evaluate access requests from the command line
+
+Test whether a principal would be allowed or denied:
+
+```bash
+# Developer reading their own tenant data -- should ALLOW
+python src/policies/evaluator.py \
+  --principal "bob" \
+  --action "s3:GetObject" \
+  --resource "arn:aws:s3:::fintech-data/report.csv" \
+  --tags "tenant_id=fintech-prod"
+```
+
+```
+Decision:  ALLOW
+Reason:    Allowed by identity policy
+Source:    fintech-prod/developer
+```
+
+```bash
+# Developer trying IAM actions -- should DENY
+python src/policies/evaluator.py \
+  --principal "bob" \
+  --action "iam:CreateUser" \
+  --resource "*" \
+  --tags "tenant_id=fintech-prod"
+```
+
+```
+Decision:  DENY
+Reason:    No matching allow statement (implicit deny)
+```
+
+```bash
+# Tenant A user accessing Tenant B resources -- should DENY (tenant isolation)
+python src/policies/evaluator.py \
+  --principal "alice" \
+  --action "s3:GetObject" \
+  --resource "arn:aws:s3:::healthco-data/patients.csv" \
+  --tags "tenant_id=fintech-prod"
+```
+
+```
+Decision:  DENY
+Reason:    No matching allow statement (implicit deny)
+```
+
+### 7. Start the REST API
+
+```bash
+python api/app.py
+```
+
+API is running at http://localhost:8000. Open a new terminal for the commands below.
+
+---
+
+## REST API usage
+
+### Health check
+```bash
+curl http://localhost:8000/api/v1/health
+```
+
+### Register a tenant
+```bash
+curl -X POST http://localhost:8000/api/v1/tenants \
+  -H "Content-Type: application/json" \
+  -d '{"tenant_id": "fintech-prod", "name": "FinTech Corp", "sso": "cognito"}'
+```
+
+### Evaluate an access request
+```bash
+curl -X POST http://localhost:8000/api/v1/evaluate \
+  -H "Content-Type: application/json" \
+  -d '{
+    "tenant_id": "fintech-prod",
+    "role": "developer",
+    "principal": "bob@fintech.com",
+    "action": "s3:GetObject",
+    "resource": "arn:aws:s3:::fintech-data/q3.csv",
+    "session_tags": {"tenant_id": "fintech-prod", "dept": "engineering"},
+    "mfa_present": false,
+    "source_ip": "10.0.0.5"
+  }'
+```
+
+Returns HTTP 200 with decision ALLOW, or HTTP 403 with decision DENY and the reason.
+
+### Generate policies via API
+```bash
+curl -X POST http://localhost:8000/api/v1/policies/generate \
+  -H "Content-Type: application/json" \
+  -d '{"tenant_id": "fintech-prod", "role": "admin", "sso": "cognito"}'
+```
+
+Returns the full identity policy, permission boundary, and trust policy JSON.
+
+### List all available roles
+```bash
+curl http://localhost:8000/api/v1/policies/roles
+```
+
+### View audit log for a tenant
+```bash
+curl http://localhost:8000/api/v1/audit/fintech-prod
+```
+
+Returns every access decision (allow and deny) for that tenant in chronological order.
+
+### List all tenants
+```bash
+curl http://localhost:8000/api/v1/tenants
 ```
 
 ---
 
-## Policy design decisions
+## Policy evaluation order
 
-**Why ABAC over pure RBAC?**
-Roles alone don't scale well past ~20 distinct permission sets. ABAC lets you write fewer policies by adding conditions based on tags — `tenant_id` must match on both the principal's session and the resource. This means you can have one "developer" policy used across all tenants, with the tenant boundary enforced at evaluation time.
+The evaluator follows AWS IAM evaluation logic:
 
-**Permission boundaries**
-Every role has a permission boundary that acts as a hard ceiling. Even if someone manages to attach a wildcard policy to a role, the boundary prevents it from taking effect. This is the defense-in-depth layer that most IAM setups skip.
-
-**Least privilege by default**
-Roles start with an explicit deny-all and actions are added individually. It's more annoying to set up but much easier to audit — you can look at any role and know exactly what it can do.
+```
+1. Explicit DENY in any policy?      --> Always DENY, stop.
+2. SCP blocks it?                    --> DENY
+3. Permission boundary blocks it?    --> DENY
+4. Explicit ALLOW in identity policy?--> ALLOW
+5. No match?                         --> DENY (implicit deny)
+```
 
 ---
 
 ## Querying audit logs with Athena
 
-After CloudTrail logs land in S3, the Athena table (created by `infra/athena.tf`) lets you query them like SQL:
+After deploying with Terraform and CloudTrail logs land in S3:
 
 ```sql
--- Find all IAM changes in the last 7 days
-SELECT eventtime, useridentity.username, eventname, requestparameters
-FROM cloudtrail_logs
-WHERE eventsource = 'iam.amazonaws.com'
-  AND from_iso8601_timestamp(eventtime) > current_timestamp - interval '7' day
-ORDER BY eventtime DESC;
+-- All denied requests in the last 7 days
+SELECT timestamp, principal, action, resource, reason
+FROM audit_logs
+WHERE tenant_id = 'fintech-prod'
+  AND decision = 'DENY'
+  AND from_iso8601_timestamp(timestamp) > current_timestamp - interval '7' day
+ORDER BY timestamp DESC;
 
--- Find all cross-tenant access attempts
-SELECT eventtime, useridentity.username, requestparameters
-FROM cloudtrail_logs
-WHERE requestparameters LIKE '%tenant-b%'
-  AND useridentity.username LIKE '%tenant-a%';
+-- Cross-tenant access attempts
+SELECT timestamp, principal, action, resource
+FROM audit_logs
+WHERE session_tags LIKE '%tenant-a%'
+  AND resource LIKE '%tenant-b%';
 ```
 
 ---
 
-## Running tests
+## AWS deployment (optional)
+
+Requires AWS CLI and Terraform 1.4+.
 
 ```bash
-pytest tests/ -v --tb=short
+# Generate all policies for your tenant first
+python src/policies/generator.py --tenant your-tenant --role admin --output out/
+python src/policies/generator.py --tenant your-tenant --role developer --output out/
+python src/policies/generator.py --tenant your-tenant --role analyst --output out/
+python src/policies/generator.py --tenant your-tenant --role readonly --output out/
+
+# Deploy roles
+cd infra/
+terraform init
+terraform apply -var="tenant_id=your-tenant"
 ```
 
-The evaluator tests cover ~40 allow/deny scenarios without needing AWS credentials.
+---
+
+## Environment variables
+
+| Variable | Description | Required for |
+|----------|-------------|--------------|
+| AWS_DEFAULT_REGION | AWS region | AWS deployment |
+| CW_LOG_GROUP | CloudWatch log group for audit | Audit logging |
+| S3_AUDIT_BUCKET | S3 bucket for Athena queries | Audit logging |
+| AUDIT_LOG_DIR | Local audit log directory | Local logging |
+| PORT | API port (default 8000) | API |
+| FLASK_ENV | development enables debug | API |
 
 ---
 
