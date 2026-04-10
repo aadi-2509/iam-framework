@@ -1,0 +1,67 @@
+name: CI
+
+on:
+  push:
+    branches: [ main, dev ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.10", "3.11", "3.12"]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Cache pip
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-${{ hashFiles('requirements.txt') }}
+
+      - name: Install dependencies
+        run: |
+          pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pytest pytest-cov flake8
+
+      - name: Lint
+        run: flake8 src/ api/ --max-line-length=120 --ignore=E501,W503
+
+      - name: Run tests with coverage
+        run: pytest tests/ -v --cov=src --cov-report=term-missing
+
+  validate-policies:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -r requirements.txt
+      - name: Validate all role policies generate without error
+        run: |
+          python -c "
+          import sys
+          sys.path.insert(0, 'src/policies')
+          from generator import generate_policy, generate_permission_boundary
+          from templates import ROLE_TEMPLATES
+          tenants = ['test-fintech', 'test-healthco', 'test-retail']
+          roles = list(ROLE_TEMPLATES.keys())
+          for t in tenants:
+              for r in roles:
+                  policy = generate_policy(t, r)
+                  boundary = generate_permission_boundary(t)
+                  stmts = policy.get('Statement', [])
+                  assert len(stmts) > 0, f'Empty policy for {t}/{r}'
+                  print(f'OK: {t}/{r} — {len(stmts)} statements')
+          print('All policies validated successfully.')
+          "
